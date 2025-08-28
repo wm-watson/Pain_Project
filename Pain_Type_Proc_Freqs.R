@@ -2,20 +2,35 @@ library(tidyverse)
 library(data.table)
 
 # File paths
-file_path <- "C:/Users/watso/OneDrive - University of Arkansas for Medical Sciences/Pain_Project/NPPES_Data_Dissemination_August_2025_V2/npidata_pfile_20050523-20250810.csv"
-mylib_path <- "C:/Users/watso/OneDrive - University of Arkansas for Medical Sciences/Pain_Project/"
+file_path <- "/Users/williamwatson/Library/CloudStorage/OneDrive-UniversityofArkansasforMedicalSciences/Pain_Project/Medicare_Physician_Other_Practitioners_by_Provider_and_Service_2023/Medicare_Physician_Other_Practitioners_by_Provider_and_Service_2023.csv"
+mylib_path <- "/Users/williamwatson/Library/CloudStorage/OneDrive-UniversityofArkansasforMedicalSciences/Pain_Project/"
 
 #Sample NPPES Data----
 # Read first 100,000 rows
-cms_pain_prov <- fread("C:/Users/watso/OneDrive - University of Arkansas for Medical Sciences/Pain_Project/Medicare_Physician_Other_Practitioners_by_Provider_and_Service_2021/mdcr_pain_provs_2021.csv")
+cms_pain_prov <- fread("/Users/williamwatson/Library/CloudStorage/OneDrive-UniversityofArkansasforMedicalSciences/Pain_Project/Medicare_Physician_Other_Practitioners_by_Provider_and_Service_2023/Medicare_Physician_Other_Practitioners_by_Provider_and_Service_2023.csv")
 
 pain_provs_slim <- cms_pain_prov %>% 
   select(c(Rndrng_NPI, Rndrng_Prvdr_Type, HCPCS_Cd, HCPCS_Desc, Tot_Srvcs, Place_Of_Srvc))
 
 # rm(cms_pain_prov)
 
-pain_provs_no_EM <- pain_provs_slim %>% 
-  filter(c)
+
+# Define top HCPCS codes for Pain Management and Interventional Pain Management
+pm_top10_codes <- c("64493", "64494", "64483", "62323", "27096", 
+                    "64635", "20610", "64636", "62321", "64484")
+
+pm_top20_codes <- c("64493", "64494", "64483", "62323", "27096", 
+                    "64635", "20610", "64636", "62321", "64484",
+                    "64490", "64491", "J1100", "20553", "J1030",
+                    "J3301", "99152", "80307", "64633", "64495")
+
+ipm_top10_codes <- c("64493", "64494", "64483", "62323", "64635",
+                     "64636", "27096", "20610", "64484", "62321")
+
+ipm_top20_codes <- c("64493", "64494", "64483", "62323", "64635",
+                     "64636", "27096", "20610", "64484", "62321",
+                     "64490", "64491", "J1100", "J1030", "64633",
+                     "J3301", "80307", "99152", "64634", "64495")
 
 #Remove E&M Codes, G-Codes, and Imaging codes except 99152/99153
 pain_provs_no_EM <- pain_provs_slim %>% 
@@ -31,6 +46,14 @@ pain_provs_no_EM <- pain_provs_slim %>%
     !grepl("^G", HCPCS_Cd),
     # Remove imaging 7000 series codes
     !grepl("^7[0-9]{4}$", HCPCS_Cd)
+  ) %>%
+  # Add binary indicators for top procedure codes
+  mutate(
+    pm_top10_indicator = as.integer(HCPCS_Cd %in% pm_top10_codes),
+    pm_top20_indicator = as.integer(HCPCS_Cd %in% pm_top20_codes),
+    ipm_top10_indicator = as.integer(HCPCS_Cd %in% ipm_top10_codes),
+    ipm_top20_indicator = as.integer(HCPCS_Cd %in% ipm_top20_codes),
+    Tot_Srvcs = as.numeric(gsub(",", "", Tot_Srvcs))
   )
 
 # Calculate total providers by type first
@@ -40,64 +63,43 @@ provider_counts <- pain_provs_no_EM %>%
 
 # Group by provider type and HCPCS code
 pain_procs_by_type <- pain_provs_no_EM %>% 
-  mutate(Tot_Srvcs = as.numeric(gsub(",", "", Tot_Srvcs))) %>% 
   group_by(Rndrng_Prvdr_Type, HCPCS_Cd, HCPCS_Desc) %>% 
   summarise(
     total_services = sum(Tot_Srvcs, na.rm = TRUE),
     unique_providers = n_distinct(Rndrng_NPI),
+    pm_top10_services = sum(Tot_Srvcs * pm_top10_indicator, na.rm = TRUE),
+    pm_top20_services = sum(Tot_Srvcs * pm_top20_indicator, na.rm = TRUE),
+    ipm_top10_services = sum(Tot_Srvcs * ipm_top10_indicator, na.rm = TRUE),
+    ipm_top20_services = sum(Tot_Srvcs * ipm_top20_indicator, na.rm = TRUE),
     .groups = 'drop'
   ) %>% 
   # Join with provider counts
   left_join(provider_counts, by = "Rndrng_Prvdr_Type") %>%
-  group_by(Rndrng_Prvdr_Type) %>%
   mutate(
     # Method 1: Percentage of providers who perform this procedure
-    pct_providers_performing = round((unique_providers / total_providers_in_type) * 100, 2),
-    # Method 2: Percentage of total services
-    pct_of_total_services = round((total_services / sum(total_services)) * 100, 2)
-  ) %>% 
-  ungroup()
+    pct_providers_performing = round((unique_providers / total_providers_in_type) * 100, 2)
+  )
 
-# Split into separate datasets by provider type
-pain_mgmt_procs <- pain_procs_by_type %>%
-  filter(Rndrng_Prvdr_Type == "Pain Management")
+# Create summary by specialty showing top procedure usage
+specialty_top_procedure_summary <- pain_provs_no_EM %>%
+  group_by(Rndrng_Prvdr_Type) %>%
+  summarise(
+    total_services = sum(Tot_Srvcs, na.rm = TRUE),
+    pm_top10_services = sum(Tot_Srvcs * pm_top10_indicator, na.rm = TRUE),
+    pm_top20_services = sum(Tot_Srvcs * pm_top20_indicator, na.rm = TRUE),
+    ipm_top10_services = sum(Tot_Srvcs * ipm_top10_indicator, na.rm = TRUE),
+    ipm_top20_services = sum(Tot_Srvcs * ipm_top20_indicator, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    pm_top10_pct = round((pm_top10_services / total_services) * 100, 2),
+    pm_top20_pct = round((pm_top20_services / total_services) * 100, 2),
+    ipm_top10_pct = round((ipm_top10_services / total_services) * 100, 2),
+    ipm_top20_pct = round((ipm_top20_services / total_services) * 100, 2)
+  )
 
-interventional_pain_procs <- pain_procs_by_type %>%
-  filter(Rndrng_Prvdr_Type == "Interventional Pain Management")
-
-# Top 25/50 by percentage of providers performing
-pain_mgmt_top25_by_providers <- pain_mgmt_procs %>%
-  arrange(desc(pct_providers_performing)) %>%
-  slice_head(n = 25)
-
-pain_mgmt_top50_by_providers <- pain_mgmt_procs %>%
-  arrange(desc(pct_providers_performing)) %>%
-  slice_head(n = 50)
-
-interventional_top25_by_providers <- interventional_pain_procs %>%
-  arrange(desc(pct_providers_performing)) %>%
-  slice_head(n = 25)
-
-interventional_top50_by_providers <- interventional_pain_procs %>%
-  arrange(desc(pct_providers_performing)) %>%
-  slice_head(n = 50)
-
-# Top 25/50 by percentage of total services
-pain_mgmt_top25_by_services <- pain_mgmt_procs %>%
-  arrange(desc(pct_of_total_services)) %>%
-  slice_head(n = 25)
-
-pain_mgmt_top50_by_services <- pain_mgmt_procs %>%
-  arrange(desc(pct_of_total_services)) %>%
-  slice_head(n = 50)
-
-interventional_top25_by_services <- interventional_pain_procs %>%
-  arrange(desc(pct_of_total_services)) %>%
-  slice_head(n = 25)
-
-interventional_top50_by_services <- interventional_pain_procs %>%
-  arrange(desc(pct_of_total_services)) %>%
-  slice_head(n = 50)
+#Save Procs
+fwrite(specialty_top_procedure_summary, file.path(mylib_path, "speciality_summary.csv"))
 
 
 # # Check for non-numeric values
